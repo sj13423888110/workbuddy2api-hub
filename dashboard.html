@@ -8924,7 +8924,19 @@ function renderAvailableModels(){
       + '<td style="text-align:left" class="mono model-id-cell" data-label="模型 ID" title="' + esc(m.id) + '">'
       + '<label><input type="checkbox" class="model-pick" data-model-id="' + esc(m.id) + '"'
       + (picked ? ' checked' : '')
-      + ' title="勾选后该模型才会写入 DSH 等客户端的一键配置"><b>' + esc(m.id) + '</b></label>' + '</td>'
+      + ' title="勾选后该模型才会写入 DSH 等客户端的一键配置"><b>' + esc(m.id) + '</b></label>'
+      // 一键复制模型 ID：WorkBuddy「添加自定义模型」的「模型名称」要填的就是这串 ID。
+      // 按钮刻意做成**纯图标**（无文本节点）：单元格的 textContent 必须仍是裸 ID，
+      // 否则手动框选会粘上多余字符，两个模型目录测试也钉着这条不变量。
+      + '<button type="button" class="sec mini model-copy-btn" data-copy-model="' + esc(m.id) + '"'
+      + ' onclick="copyModelId(this)" title="复制模型 ID：填到 WorkBuddy「添加自定义模型」的模型名称里"'
+      + ' aria-label="复制模型 ID"'
+      + ' style="margin-left:6px;padding:2px 5px;line-height:1;vertical-align:middle;display:inline-flex;align-items:center">'
+      + '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+      + '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect>'
+      + '<path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"></path>'
+      + '</svg></button>'
+      + '</td>'
       + nameCell
       + '<td style="text-align:center" class="rate-cell" data-label="消费倍率">' + credBadge + '</td>'
       + '<td style="text-align:center" data-label="能力">' + capHtml + '</td>'
@@ -8935,6 +8947,48 @@ function renderAvailableModels(){
       + '</tr>';
   }).join('');
   applyTableSort('modelsTable');
+}
+
+/* 复制模型 ID（模型管理表格每行的「复制」按钮）。
+   取的是 m.id 原文，不做任何大小写或字符替换——WorkBuddy「添加自定义模型」
+   的模型名称必须与 /v1/models 返回的 id 逐字一致，差一个字符就是 6004/404。
+   127.0.0.1 属于安全上下文，可直接用 clipboard API；用局域网 IP 打开看板时
+   不是安全上下文，退回 textarea + execCommand 的旧路子。 */
+async function copyModelId(btn){
+  const id = btn && btn.getAttribute('data-copy-model');
+  if(!id) return;
+  let ok = false;
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(id);
+      ok = true;
+    }
+  }catch(e){ ok = false; }
+  if(!ok){
+    try{
+      const ta = document.createElement('textarea');
+      ta.value = id;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, id.length);
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    }catch(e){ ok = false; }
+  }
+  if(ok){
+    toast('已复制模型 ID：' + id, 'ok');
+    // 按钮里没有文本节点（见表格模板注释），成功反馈只改颜色，不动 textContent。
+    try{
+      btn.style.color = 'var(--accent2)';
+      setTimeout(() => { btn.style.color = ''; }, 1200);
+    }catch(e) {}
+  } else {
+    toast('复制失败，请手动选中：' + id, 'bad');
+  }
 }
 
 let CURRENT_GROWTH_UID = 'all';
