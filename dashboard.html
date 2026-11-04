@@ -3255,6 +3255,15 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '账号凭证刷新成功': 'Account credentials refreshed',
     '账号列表是空的': 'The account list is empty',
     '账号加载失败:': 'Loading accounts failed:',
+    // 账号就绪提示条（#acctReadiness）与断连引导：加粗段与正文分开翻译，逐字对齐。
+    '当前没有可用账号': 'No usable account yet',
+    '模型清单来自官方目录，不代表可以直接调用；请先到「账号」页用 OAuth 添加账号，否则任何模型请求都会返回无可用账号。':
+      'The catalog is the official model list and does not mean these models are callable; add an account via OAuth on the Accounts page first, otherwise every model request fails with no usable account.',
+    '账号全部不可用': 'All accounts are unavailable',
+    '现有账号都处于停用、限流或额度耗尽状态，调用会失败；可到「账号」页查看每个账号的具体原因。':
+      'Every existing account is disabled, rate-limited or out of credit, so calls will fail; see the Accounts page for the reason on each account.',
+    '网关进程可能已停止；双击桌面「WorkBuddy 网关.cmd」重启后点击': 'The proxy process may have stopped; restart it with the desktop shortcut and then click ',
+    '重试': 'Retry',
     '账号在单个模型上当日消耗的 token 达到该值后，该模型自动切到其他账号（同一账号的其他模型不受影响）；本地时间 0 点后自动恢复。填 0 表示不限（默认）。': 'Once the token use of an account on a single model reaches this today, that model switches to another account (the other models of the same account are unaffected); it recovers after local midnight. 0 means no limit (default).',
     '账号存储目录': 'Account directory',
     '账号已停用': 'Account disabled',
@@ -5299,6 +5308,8 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   <div id="gatewayPageHead" style="margin-bottom:16px">
     <h2 id="gatewayPageTitle" style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">网关与账号</h2>
     <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。</div>
+    <!-- 账号就绪提示：模型清单是官方目录，没有可用账号时它照样整表显示，容易被当成"能调" -->
+    <div id="acctReadiness" style="display:none;margin-top:10px;padding:8px 12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);font-size:12px;line-height:1.6;color:var(--dim)"></div>
   </div>
   <!-- 版本中枢控制栏 (三列等高对齐网格) -->
   <div class="realm-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:18px">
@@ -11196,6 +11207,28 @@ function renderAccounts(){
   applyTableSort('accounts');
 }
 
+// 账号就绪提示：模型清单来自官方目录，没有可用账号时整表照旧显示，
+// 容易被误读成「这些模型现在能调」。0 账号 / 全部限流时在页头点明。
+function renderAccountReadiness(){
+  const el = document.getElementById('acctReadiness');
+  if(!el) return;
+  const accts = window.ACCOUNTS || [];
+  const isActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
+  if(!accts.length){
+    el.style.display = 'block';
+    el.innerHTML = '<b style="color:var(--fg)">当前没有可用账号</b>'
+      + '模型清单来自官方目录，不代表可以直接调用；请先到「账号」页用 OAuth 添加账号，否则任何模型请求都会返回无可用账号。';
+    return;
+  }
+  if(!accts.filter(isActive).length){
+    el.style.display = 'block';
+    el.innerHTML = '<b style="color:var(--fg)">账号全部不可用</b>'
+      + '现有账号都处于停用、限流或额度耗尽状态，调用会失败；可到「账号」页查看每个账号的具体原因。';
+    return;
+  }
+  el.style.display = 'none';
+}
+
 async function loadAccounts(){
   try{
     const [acct, byAcct] = await Promise.all([
@@ -11209,6 +11242,7 @@ async function loadAccounts(){
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     await loadProxySlots();
     renderAccounts();
+    renderAccountReadiness();
     renderConsoleAccountHealth(window.ACCOUNTS || []);
     updateUI();
     // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
@@ -12732,7 +12766,9 @@ async function refreshInner(gen){
     if(gen === REFRESH_GEN){
       document.getElementById('statusDot').className = 'dot err';
       if(String(e.message) !== 'unauthorized'){
-        document.getElementById('meta').innerHTML = '<b>无法连接反代</b>';
+        document.getElementById('meta').innerHTML = '<b>无法连接反代</b>'
+          + '网关进程可能已停止；双击桌面「WorkBuddy 网关.cmd」重启后点击'
+          + '<a href="#" onclick="refresh();return false;" style="color:inherit;text-decoration:underline;margin-left:2px">重试</a>';
       }
     }
     return;
@@ -14285,6 +14321,7 @@ function selectConsoleEntry(linkId, label){
 function openModelCatalog(){
   switchMainTab('gateway');
   applyConsoleView('models');
+  renderAccountReadiness();
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 function openRecentRequests(){
