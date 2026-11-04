@@ -21,6 +21,9 @@ import time
 DEFAULT_PANEL_PASSWORD = "admin"
 PBKDF2_ROUNDS = 120_000
 SESSION_TTL = 7 * 24 * 3600
+# "Keep me signed in" sessions are written to disk and get a longer runway, so
+# a gateway restart does not force the panel password again.
+REMEMBER_TTL = 30 * 24 * 3600
 # How often the gateway pulls fresh prices, in minutes; keep in step with
 # wb_pricing.DEFAULT_REFRESH_MINUTES.
 DEFAULT_PRICING_REFRESH_MINUTES = 5.0
@@ -3280,41 +3283,141 @@ def find_proxy_slot(accounts_dir, slot_id):
 
 
 class PanelSessions(object):
-    """In-memory bearer tokens handed out after a successful panel login.
+    """Bearer tokens handed out after a successful panel login.
 
-    Deliberately not persisted: restarting the gateway logs browsers out, which
-    is the safer default for a LAN tool that people expose behind a port map.
+    A plain login keeps its token in memory only: closing the process logs the
+    browser out, which stays the safe default for a LAN tool behind a port map.
+
+    A login made with "keep me signed in" sets ``remember=True``; that token is
+    also written to ``accounts/panel_sessions.json`` so it survives a gateway
+    restart, which is what people actually expect from that checkbox. Only the
+    SHA-256 digest is stored - the file alone cannot be replayed as a session.
     """
 
-    def __init__(self, ttl=SESSION_TTL):
-        self.ttl = ttl
-        self._tokens = {}
-        self._lock = threading.RLock()
+    FILE_NAME = "panel_sessions.json"
 
-    def create(self):
+    def __init__(self, ttl=SESSION_TTL, accounts_dir=None,
+                 remember_ttl=REMEMBER_TTL):
+        self.ttl = ttl
+        self.remember_ttl = remember_ttl
+        self._tokens = {}
+        self._accounts_dir = None
+        self._lock = threading.RLock()
+        if accounts_dir:
+            self.bind(accounts_dir)
+
+    def bind(self, accounts_dir):
+        """Point the persistent store at an accounts dir (called at startup)."""
+        self._accounts_dir = str(accounts_dir or "") or None
+
+    @staticmethod
+    def _digest(token):
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _path(self):
+        if not self._accounts_dir:
+            return None
+        return os.path.join(self._accounts_dir, self.FILE_NAME)
+
+    def _load(self):
+        """Persisted digests -> expiry, expired entries dropped."""
+        path = self._path()
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        sessions = data.get("sessions") if isinstance(data, dict) else None
+        if not isinstance(sessions, dict):
+            return {}
+        now = time.time()
+        return {digest: float(expiry) for digest, expiry in sessions.items()
+                if isinstance(expiry, (int, float)) and float(expiry) > now}
+
+    def _save(self, sessions):
+        path = self._path()
+        if not path:
+            return
+        os.makedirs(self._accounts_dir, exist_ok=True)
+        payload = json.dumps({"sessions": sessions}, indent=2, sort_keys=True)
+        # Write-then-rename: a half-written file would log everyone out.
+        temp = path + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        try:
+            os.chmod(temp, 0o600)
+        except OSError:
+            pass
+        os.replace(temp, path)
+
+    def create(self, remember=False):
         token = secrets.token_urlsafe(24)
+        now = time.time()
+        if remember and self._accounts_dir:
+            with self._lock:
+                sessions = self._load()
+                sessions[self._digest(token)] = now + self.remember_ttl
+                try:
+                    self._save(sessions)
+                except OSError:
+                    # Disk full or read-only store: the token still works for
+                    # this process, it just will not survive a restart.
+                    pass
+            return token
+        # No store bound (or a plain login): memory only. A "remember me"
+        # token without a store still gets the longer runway in-process.
         with self._lock:
-            self._tokens[token] = time.time() + self.ttl
+            self._tokens[token] = now + (self.remember_ttl if remember
+                                         else self.ttl)
         return token
 
     def valid(self, token):
         if not token:
             return False
+        now = time.time()
         with self._lock:
             expiry = self._tokens.get(token)
+            if expiry:
+                if expiry < now:
+                    self._tokens.pop(token, None)
+                else:
+                    return True
+            if not self._accounts_dir:
+                return False
+            sessions = self._load()
+            expiry = sessions.get(self._digest(token))
             if not expiry:
                 return False
-            if expiry < time.time():
-                self._tokens.pop(token, None)
+            if expiry < now:
+                sessions.pop(self._digest(token), None)
+                try:
+                    self._save(sessions)
+                except OSError:
+                    pass
                 return False
             return True
 
     def revoke(self, token):
         if not token:
             return
+        digest = self._digest(token)
         with self._lock:
             self._tokens.pop(token, None)
+            if self._accounts_dir:
+                sessions = self._load()
+                if sessions.pop(digest, None) is not None:
+                    try:
+                        self._save(sessions)
+                    except OSError:
+                        pass
 
     def revoke_all(self):
         with self._lock:
             self._tokens.clear()
+            if self._accounts_dir:
+                try:
+                    self._save({})
+                except OSError:
+                    pass

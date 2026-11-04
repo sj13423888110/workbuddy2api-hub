@@ -1223,8 +1223,10 @@ DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashb
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                 "cached_tokens", "total_tokens", "credit")
 # Web-panel access control. The panel is gated by its own password (default
-# "admin"), independent of the /v1 API key. Sessions live in memory only, so a
-# restart forces browsers to log in again.
+# "admin"), independent of the /v1 API key. Plain logins live in memory only,
+# so a restart sends those browsers back to the password box; a login made with
+# "keep me signed in" is persisted under accounts/panel_sessions.json instead
+# (the store is bound to ACCOUNTS_DIR once that path is known).
 PANEL = wb_settings.PanelSessions()
 API_KEY_FILE_SET = False
 def configured_keys():
@@ -6792,6 +6794,9 @@ def _credits_sweep(targets, paced=True):
 # Release discovery only - the checker never downloads or installs anything.
 UPDATES = None
 ACCOUNTS_DIR = os.environ.get("ACCOUNTS_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
+# Now that the accounts dir is known, let the panel session store persist
+# "keep me signed in" tokens there.
+PANEL.bind(ACCOUNTS_DIR)
 try:
     # Panel-set version overrides ride on top of the verified defaults; the
     # identity module only changes the version strings it sends.
@@ -22831,7 +22836,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(401, "invalid panel password", "invalid_request_error")
             with _login_lock:
                 _login_attempts.pop(client_ip, None)
-            token = PANEL.create()
+            token = PANEL.create(remember=bool(payload.get("remember")))
             return self._json(200, {
                 "ok": True,
                 "token": token,
@@ -22864,7 +22869,9 @@ class Handler(BaseHTTPRequestHandler):
             if new != wb_settings.DEFAULT_PANEL_PASSWORD:
                 # Rotating the password invalidates every other browser session.
                 PANEL.revoke_all()
-            token = PANEL.create()
+            # The browser that changed it keeps a valid session, with the same
+            # "keep me signed in" duration it asked for at login.
+            token = PANEL.create(remember=bool(payload.get("remember")))
             return self._json(200, {
                 "ok": True, "token": token,
                 "using_default_password":

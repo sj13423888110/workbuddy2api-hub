@@ -13207,10 +13207,15 @@ async function submitPanelLogin(){
     return;
   }
   try {
+    // 「保持登录」必须在请求里告诉服务端：token 存不存盘由后端决定，前端
+    // 只把它放进 localStorage 的话，网关一重启 token 就在服务端作废，用户
+    // 照样每次都要重输密码。
+    const rememberEl = document.getElementById('panelRemember');
+    const remember = rememberEl ? !!rememberEl.checked : PANEL_REMEMBER;
     const r = await fetch('/panel/login', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: password})
+      body: JSON.stringify({password: password, remember: remember})
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok){
@@ -13221,8 +13226,6 @@ async function submitPanelLogin(){
       panelNeedsLogin();
       return;
     }
-    const rememberEl = document.getElementById('panelRemember');
-    const remember = rememberEl ? !!rememberEl.checked : PANEL_REMEMBER;
     panelStoreToken(data.token || '', remember);
     if(input) input.value = '';
     panelHideGate();
@@ -14911,7 +14914,9 @@ async function savePanelPassword(btn){
   if(!cur || !nw){ toast('请填写当前密码和新密码', 'warn'); return; }
   btn.disabled = true;
   try {
-    const data = await postJSON('/panel/password', {current: cur, new: nw});
+    // 带上「保持登录」：改完密码服务端会作废所有会话并重发当前会话的 token，
+    // 这个新 token 要不要能扛住网关重启，取决于用户勾没勾那一项。
+    const data = await postJSON('/panel/password', {current: cur, new: nw, remember: PANEL_REMEMBER});
     if(data.token){
       panelStoreToken(data.token, PANEL_REMEMBER);
     }
