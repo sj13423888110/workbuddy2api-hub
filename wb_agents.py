@@ -720,12 +720,101 @@ def _codex_home(home):
     return os.environ.get("CODEX_HOME") or os.path.join(home, ".codex")
 
 
+# Codex 桌面端的模型选择器读 config.toml 的 model_catalog_json，而不是读
+# provider。不写这个键，下拉里永远是别的工具（例如 CC Switch）留下的旧名单，
+# 面板里勾了模型也不会出现在 Codex 里。
+CODEX_CATALOG_NAME = "wb-proxy-model-catalog.json"
+
+
+def _toml_top_value(text, key):
+    """顶层 `key = "value"` 的字符串值；没有或不是字符串返回 None。
+
+    只看第一个 [table] 之前的行：provider 表里也可能出现同名键，那不是
+    Codex 真正读的那个。
+    """
+    pattern = re.compile(r'^\s*' + re.escape(key) + r'\s*=\s*"([^"]*)"\s*$')
+    for line in (text or "").splitlines():
+        if line.strip().startswith("["):
+            break
+        match = pattern.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _codex_catalog_template(codex_home, config_text):
+    """取一条已存在的模型条目当模板。
+
+    Codex 的目录条目有三十多个字段（base_instructions、supported_reasoning_levels
+    等），凭空造一条大概率被忽略或报错，所以克隆现有条目、只改 slug/display_name。
+    """
+    current = _toml_top_value(config_text, "model_catalog_json")
+    candidates = []
+    if current:
+        candidates.append(current if os.path.isabs(current)
+                          else os.path.join(codex_home, current))
+    candidates.append(os.path.join(codex_home, "cc-switch-model-catalog.json"))
+    for path in candidates:
+        try:
+            data = _load_json(path, "codex model catalog")
+        except Exception:
+            continue
+        models = data.get("models")
+        if isinstance(models, list) and models and isinstance(models[0], dict):
+            return dict(models[0])
+    return None
+
+
+def _codex_catalog_text(models, template):
+    entries = []
+    for item in models or []:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        entry = dict(template) if template else {}
+        entry["slug"] = mid
+        entry["display_name"] = mid
+        entry["description"] = mid
+        for src, dst in (("context_window", "context_window"),
+                         ("max_output", "max_output_tokens")):
+            try:
+                value = int(item.get(src) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                entry[dst] = value
+        entries.append(entry)
+    return _dump_json({"models": entries})
+
+
 def _apply_codex(paths, ctx):
     config_path = paths["config"]
     text = _read_text(config_path)
+    known = [str(m.get("id") or "").strip()
+             for m in (ctx.get("models") or []) if isinstance(m, dict)]
+    known = [mid for mid in known if mid]
+    # 目录模板要在改写 model_catalog_json 之前读出来。
+    catalog_path = paths.get("catalog")
+    template = (_codex_catalog_template(os.path.dirname(catalog_path), text)
+                if catalog_path and known else None)
     text = toml_upsert_top_key(text, "model_provider", PROVIDER_ID)
-    if ctx.get("model"):
-        text = toml_upsert_top_key(text, "model", ctx["model"])
+    chosen = ctx.get("model")
+    if not chosen:
+        # 面板没选模型时不要保留别的工具写下的名字：CC Switch 会留一个
+        # cn:auto 这类网关根本不认的值（上游直接 11102 model service info
+        # not found）。能对上目录就沿用，对不上就换成目录里第一个。
+        current = _toml_top_value(text, "model")
+        if current and (not known or current in known):
+            chosen = current
+        elif known:
+            chosen = known[0]
+    if chosen:
+        text = toml_upsert_top_key(text, "model", chosen)
+        # 回写 ctx：plan() 用它拼返回值，面板卡片显示的「模型」才不会在我们
+        # 已经写了真实 id 的情况下仍报「未指定」。
+        ctx["model"] = chosen
     # Codex 0.163 resolves env_key at startup and aborts with
     # "Missing environment variable: OPENAI_API_KEY" when the variable is not
     # in the process environment; auth.json no longer satisfies it. Put the
@@ -742,7 +831,17 @@ def _apply_codex(paths, ctx):
     auth_path = paths["auth"]
     auth = _load_json(auth_path, "codex auth")
     auth = deep_merge(auth, {"OPENAI_API_KEY": ctx["api_key"]})
-    return {config_path: text, auth_path: _dump_json(auth)}
+    result = {config_path: text, auth_path: _dump_json(auth)}
+    # 目录文件总是写（client 的 files 里声明了它，plan()/restore 都按「声明即拥有」
+    # 处理）；但只有当能从现有目录拿到一条可信模板时，才把 model_catalog_json
+    # 指过来——造不出 Codex 认的条目时宁可留空文件，也不要让选择器变成空的。
+    if catalog_path and known:
+        result[catalog_path] = _codex_catalog_text(ctx.get("models"), template)
+        if template:
+            text = toml_upsert_top_key(text, "model_catalog_json",
+                                       CODEX_CATALOG_NAME)
+            result[config_path] = text
+    return result
 
 
 def _apply_opencode(paths, ctx):
@@ -1168,6 +1267,8 @@ CLIENTS = {
         "files": lambda home: {
             "config": os.path.join(_codex_home(home), "config.toml"),
             "auth": os.path.join(_codex_home(home), "auth.json"),
+            # Codex 桌面端模型选择器的数据源，见 _apply_codex 里的说明。
+            "catalog": os.path.join(_codex_home(home), CODEX_CATALOG_NAME),
         },
         "probe": lambda home: (
             os.path.isdir(_codex_home(home))
