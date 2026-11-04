@@ -2448,6 +2448,8 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '复制': 'Copy',
     '复制失败:': 'Copy failed:',
     '复制登录链接': 'Copy sign-in link',
+    '扫码登录': 'Sign in by QR code',
+    '在新标签页打开上面的授权链接，用手机扫码或直接登录': 'Open the sign-in link above in a new tab to scan the QR code or sign in directly',
     '复制当前视图显示的日志': 'Copy the log lines shown in the current view',
     '多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个': 'Accounts are used with session stickiness plus round-robin; when one is rejected upstream it switches to the next',
     '天有活动': 'days active',
@@ -7742,6 +7744,10 @@ async function triggerLoginForSelectedRealm(){
     if(linkBox) linkBox.innerHTML =
       '<a class="login-link" id="loginLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
       + '<button class="sec mini" onclick="copyLoginLink()">复制登录链接</button>'
+      // 「扫码登录」：直接把这条授权链接在新标签页打开，省掉复制→粘贴。
+      // 必须复用当前这条带 state 的链接，重新申请会让本窗口的轮询作废。
+      + '<button class="sec mini" onclick="openLoginLink()" style="margin-left:6px"'
+      + ' title="在新标签页打开上面的授权链接，用手机扫码或直接登录">扫码登录</button>'
       + '<div class="hint">点击上方链接在浏览器里完成登录授权。登录完成后本窗口会自动检测并完成入池。</div>';
     pollLogin();
     loginTimer = setInterval(pollLogin, 2500);
@@ -7759,6 +7765,29 @@ async function copyLoginLink(){
     toast('已复制到剪贴板', 'ok');
   }catch(e){
     toast('复制失败: ' + e.message, 'bad');
+  }
+}
+
+/* 「扫码登录」：把弹窗里当前这条授权链接直接在新标签页打开。
+   必须复用 #loginLink 的 href（里面带 state），重新申请会让本窗口正在跑
+   的 /accounts/login/poll 立刻作废。用 a.click() 而不是 window.open：
+   带 noopener 时 window.open 一律返回 null，没法判断是否被拦截，
+   而合成点击不受弹窗拦截影响。 */
+function openLoginLink(){
+  const link = document.getElementById('loginLink');
+  const href = link && link.getAttribute('href');
+  if(!href){ toast('登录链接还没生成', 'warn'); return; }
+  try{
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try{ a.remove(); }catch(e){} }, 0);
+  }catch(e){
+    toast('打开登录页失败: ' + e.message, 'bad');
   }
 }
 
