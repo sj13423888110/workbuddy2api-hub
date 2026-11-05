@@ -1,8 +1,8 @@
 # 本仓库说明（个人修改版）
 
 这是 [`ardeyouxipianyi/workbuddy2api-hub`](https://github.com/ardeyouxipianyi/workbuddy2api-hub) 的**个人修改版**，
-在上游 `v1.10.9`（commit `077fb2f`）基础上增加了 5 个提交，全部改动都只涉及看板体验与 Codex 一键配置，
-没有改动账号池、代理出口、指纹处理等核心逻辑。
+在上游 `v1.10.9`（commit `077fb2f`）基础上增加了 6 个提交，全部改动只涉及看板体验、Codex 一键配置
+与本机启动方式，没有改动账号池、代理出口、指纹处理等核心逻辑。
 
 上游原项目为 MIT 协议，本仓库沿用。
 
@@ -17,6 +17,7 @@
 | `caacf8e` | 登录弹窗「复制登录链接」右侧新增「扫码登录」，直接在新标签页打开当前授权链接（复用已有 `state`，不重新申请） | `dashboard.html` |
 | `0ac332e` | 修 Codex 一键配置：`model_catalog_json` 指向自建目录，未选模型时丢弃 CC Switch 残留的非法模型名（如 `cn:auto`，上游返回 11102），改取目录首个真实 id；`restore` 一并回收自建目录 | `wb_agents.py` |
 | `f0c6028` | 面板「保持登录」改由服务端持久化：勾选时 token 以 SHA-256 摘要落盘 `accounts/panel_sessions.json`，网关重启后免密（30 天）；不勾选仍只存内存 | `wb_settings.py`、`wb_proxy.py`、`dashboard.html` |
+| `829fb8f` | 新增 Windows 桌面启动器 `tools/windows-launcher/`：`pythonw` 静默起网关并开面板（端口在监听则只开面板），`make_shortcut.py` 调 IShellLink 生成带图标的 `.lnk` | `tools/windows-launcher/` |
 
 上游测试套件在改动后全部通过：`python tests/run_all.py` → **262 passed / 0 failed**。
 
@@ -33,6 +34,22 @@ python wb_proxy.py --port 8788
 ```
 
 Windows 下也可以直接双击仓库里的 `start-wb-proxy.bat`（静默后台启动）。
+
+### 桌面快捷方式（可选，Windows）
+
+想要一个「双击就开面板、没在跑就先起服务」的桌面图标：
+
+```bat
+cd /d <仓库路径>\tools\windows-launcher
+python make_shortcut.py
+```
+
+会在真实桌面生成 `WorkBuddy 网关.lnk`（图标为 `gateway.ico`）。目标写的是
+`pythonw.exe` + `launch.py`，所以不会弹控制台窗口；路径都由脚本现算，不含机器相关的硬编码。
+细节与排错见 `tools/windows-launcher/README.md`。
+
+注意：`start-wb-proxy.bat` 和这个启动器功能重叠，**留一个就够**。两者都先查端口再决定是否拉起服务，
+所以同时存在也不会起两个网关实例，只是没必要。
 
 ### 方式二：Download ZIP（机器上没有 git）
 
